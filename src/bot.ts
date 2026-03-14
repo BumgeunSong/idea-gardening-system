@@ -3,7 +3,7 @@ import { App } from '@slack/bolt';
 import cron from 'node-cron';
 import { generateQuestions, followUp, extractSeedAndTags } from './llm';
 import { createSession, getSession, addMessage, closeSession, getAllActiveSessions, restoreSessions } from './session';
-import { saveHarvest, loadRecentHarvests } from './harvest';
+import { saveHarvest, loadRecentHarvests, loadHarvestsByDate } from './harvest';
 import { pullHarvestsFromGitHub } from './github';
 import { extractUrls, fetchUrlContent } from './web';
 import type { Mode, ParentInfo } from './types';
@@ -163,7 +163,14 @@ async function postDailyQuestions(): Promise<void> {
     // Deduplicate tags
     const uniqueTags = [...new Set(recentTags)];
 
-    const questions = await generateQuestions({ recentSeeds, recentTags: uniqueTags });
+    // Build yesterday's summary for compounding context
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const yesterdayHarvests = loadHarvestsByDate(yesterday);
+    const yesterdaySummary = yesterdayHarvests.length > 0
+      ? yesterdayHarvests.map(h => `- [${h.frontmatter.mode}] ${h.frontmatter.seed}`).join('\n')
+      : undefined;
+
+    const questions = await generateQuestions({ recentSeeds, recentTags: uniqueTags, yesterdaySummary });
 
     for (const q of questions) {
       const label = q.mode.charAt(0).toUpperCase() + q.mode.slice(1);
@@ -219,7 +226,7 @@ app.command('/generate', async ({ ack }) => {
 });
 
 // --- Slash command: /healthcheck ---
-app.command('/healthcheck', async ({ ack, client }) => {
+app.command('/healthcheck', async ({ ack, command, client }) => {
   await ack();
 
   const checks: string[] = [];
@@ -256,7 +263,7 @@ app.command('/healthcheck', async ({ ack, client }) => {
   const elapsed = Date.now() - startTime;
 
   await client.chat.postMessage({
-    channel: CHANNEL_ID,
+    channel: command.channel_id,
     text: `🏥 *Health Check Report* (${elapsed}ms)\n\n${checks.join('\n')}`,
   });
 });
