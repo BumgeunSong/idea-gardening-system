@@ -6,7 +6,7 @@ import { createSession, getSession, addMessage, closeSession, getAllActiveSessio
 import { saveHarvest, loadRecentHarvests } from './harvest';
 import { pullHarvestsFromGitHub } from './github';
 import { extractUrls, fetchUrlContent } from './web';
-import type { ParentInfo } from './types';
+import type { Mode, ParentInfo } from './types';
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -212,24 +212,15 @@ async function autoSaveAllSessions(): Promise<void> {
   }
 }
 
-// --- Bot mention commands ---
-app.event('app_mention', async ({ event, client }) => {
-  const text = event.text.toLowerCase();
+// --- Slash command: /generate ---
+app.command('/generate', async ({ ack }) => {
+  await ack();
+  await postDailyQuestions();
+});
 
-  // --- Manual trigger: "generate" ---
-  if (text.includes('generate')) {
-    await client.chat.postMessage({
-      channel: event.channel,
-      thread_ts: event.ts,
-      text: '🔄 질문 생성 중...',
-    });
-
-    await postDailyQuestions();
-    return;
-  }
-
-  // --- Health check ---
-  if (!text.includes('health check')) return;
+// --- Slash command: /healthcheck ---
+app.command('/healthcheck', async ({ ack, client }) => {
+  await ack();
 
   const checks: string[] = [];
   const startTime = Date.now();
@@ -265,10 +256,70 @@ app.event('app_mention', async ({ event, client }) => {
   const elapsed = Date.now() - startTime;
 
   await client.chat.postMessage({
-    channel: event.channel,
-    thread_ts: event.ts,
+    channel: CHANNEL_ID,
     text: `🏥 *Health Check Report* (${elapsed}ms)\n\n${checks.join('\n')}`,
   });
+});
+
+// --- Slash commands: /harvest, /crig, /bisociate ---
+const MODE_CONFIG: Record<Mode, { emoji: string; opener: (topic: string) => string }> = {
+  harvest: {
+    emoji: '🌱',
+    opener: (topic) => `🌱 ${topic} — 이 주제에 대해 어떤 생각이 있어?`,
+  },
+  crig: {
+    emoji: '💎',
+    opener: (topic) => `💎 ${topic} — 어느 정도 이해하고 있어?`,
+  },
+  bisociate: {
+    emoji: '🔀',
+    opener: (topic) => `🔀 ${topic} — 이 둘의 공통점이 뭘까?`,
+  },
+};
+
+for (const mode of ['harvest', 'crig', 'bisociate'] as Mode[]) {
+  app.command(`/${mode}`, async ({ ack, command, client }) => {
+    await ack();
+
+    const topic = command.text.trim();
+    if (!topic) {
+      await client.chat.postEphemeral({
+        channel: command.channel_id,
+        user: command.user_id,
+        text: `주제를 입력해줘! 예: \`/${mode} ${mode === 'bisociate' ? '코딩 vs 글쓰기' : '흥미로운 주제'}\``,
+      });
+      return;
+    }
+
+    const config = MODE_CONFIG[mode];
+    const openerText = config.opener(topic);
+
+    // Post opener as a new channel message (becomes thread root)
+    const result = await client.chat.postMessage({
+      channel: CHANNEL_ID,
+      text: openerText,
+    });
+
+    const threadTs = result.ts!;
+    createSession(threadTs, CHANNEL_ID, mode, openerText);
+  });
+}
+
+// --- Bot mention: on-demand harvest thread (fallback) ---
+app.event('app_mention', async ({ event, client }) => {
+  // Extract topic by removing the bot mention
+  const topic = event.text.replace(/<@[A-Z0-9]+>/g, '').trim();
+  if (!topic) return;
+
+  const openerText = `🌱 ${topic} — 이 주제에 대해 어떤 생각이 있어?`;
+
+  const result = await client.chat.postMessage({
+    channel: CHANNEL_ID,
+    text: openerText,
+  });
+
+  const threadTs = result.ts!;
+  createSession(threadTs, CHANNEL_ID, 'harvest', openerText);
 });
 
 // --- Cron schedules ---
