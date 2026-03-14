@@ -1,0 +1,23 @@
+{
+  "name": "idea-gardening-system",
+  "version": "1.0.0",
+  "description": "Slack-based thought harvesting system with context-aware Socratic interviews",
+  "main": "dist/bot.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/bot.js",
+    "dev": "tsx --watch src/bot.ts"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.1.0",
+    "openai": "^4.73.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0",
+    "@types/node-cron": "^3.0.11"
+  }
+}
