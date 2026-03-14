@@ -51,8 +51,6 @@ app.event('message', async ({ event, client }) => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const msg = event as any;
 
-  console.log(`[msg] channel=${msg.channel} thread_ts=${msg.thread_ts} bot_id=${msg.bot_id} subtype=${msg.subtype}`);
-
   if (msg.channel !== CHANNEL_ID) return;
   if (!msg.thread_ts) return;
   if (msg.bot_id) return;
@@ -100,7 +98,6 @@ app.event('message', async ({ event, client }) => {
 
   if (!session) {
     const parentInfo = await getModeFromParentMessage(CHANNEL_ID, threadTs);
-    console.log(`[msg] parentInfo=${JSON.stringify(parentInfo)}`);
     if (!parentInfo) {
       await client.chat.postMessage({
         channel: CHANNEL_ID,

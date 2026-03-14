@@ -18,6 +18,8 @@ These materials don't appear on command. Inspiration strikes in random moments, 
 
 Every morning at 9AM, the bot posts 9 questions to a Slack channel — a menu of thinking prompts you can browse on your phone. Pick the ones that spark something. Ignore the rest. Zero pressure.
 
+Questions are generated with context from your past harvests — recent seeds and tags feed into question generation, so each day's questions build on what you've been thinking about.
+
 ### 2. Three Interview Modes
 
 Each mode uses a different Socratic strategy to deepen your thinking:
@@ -28,13 +30,18 @@ Each mode uses a different Socratic strategy to deepen your thinking:
 | **Crig** | Build the skeleton of a concept and crystallize it | Detect friction in understanding, resolve one by one, compress to a seed sentence |
 | **Bisociate** | Discover unexpected connections between two unrelated ideas | Extract core mechanics of each, find hidden intersections, name the shared pattern |
 
+The bot tracks turn count and adjusts its questioning strategy — earlier turns dig deeper, later turns connect and crystallize.
+
 ### 3. Context That Compounds
 
-Past harvests feed future questions. The system remembers what you've been thinking about, which topics are developing, and where the gaps are — making each day's questions sharper than the last.
+Past harvests feed future conversations:
+- **Question generation**: Recent seeds and tags shape the next day's questions
+- **Follow-up conversations**: Past harvest seeds are injected as context, enabling the bot to connect current thinking to previous insights
+- **URL reading**: Paste a link in a thread and the bot reads the article content, using it as context for the Socratic interview
 
 ### 4. Effortless Capture
 
-Reply in a Slack thread. The bot follows up. Say "done" when you're finished. Your conversation is automatically saved as a structured harvest with an extracted seed insight and tags.
+Reply in a Slack thread. The bot follows up. Say "done" when you're finished. Your conversation is automatically saved as a structured harvest with an extracted seed insight and tags — then pushed to GitHub for permanent storage.
 
 ## Architecture
 
@@ -67,9 +74,9 @@ Reply in a Slack thread. The bot follows up. Say "done" when you're finished. Yo
       |  Context                    +---------------------------+
       |  Layers                     | Harvest Storage           |
       +----<------------------------| Extract seed + tags       |
-         (seeds, tags,              | Save as Markdown + YAML   |
-          themes feed               +---------------------------+
-          next day's Qs)
+         (seeds, tags,              | Save locally + push to    |
+          themes feed               | GitHub for persistence    |
+          next day's Qs)            +---------------------------+
 ```
 
 ### Tech Stack
@@ -80,8 +87,9 @@ Reply in a Slack thread. The bot follows up. Say "done" when you're finished. Yo
 | Slack SDK | `@slack/bolt` (Socket Mode) |
 | LLM | DeepSeek V3 via `openai` package |
 | Scheduler | `node-cron` |
-| Storage | Local filesystem (Markdown + YAML frontmatter) |
-| Hosting | Railway |
+| Storage | Markdown + YAML frontmatter, synced to GitHub |
+| URL Reading | Jina Reader API |
+| Hosting | Railway (auto-deploys from `main`) |
 
 ### Harvest Format
 
@@ -107,13 +115,24 @@ A: I should harvest my own thinking first, then use AI to refine...
 
 | Command | Where | Effect |
 |---------|-------|--------|
-| `generate` | #interview channel | Manually trigger daily question generation |
+| `@bot generate` | Channel (mention) | Manually trigger daily question generation |
 | `done` | In a thread | Save the conversation as a harvest |
-| `health` | Any channel | System status report (Slack, LLM, storage) |
+| `@bot health check` | Channel (mention) | System status report (Slack, LLM, storage) |
+
+## Key Features
+
+- **Persistent harvests**: Auto-pushed to GitHub on save, pulled on startup — survives Railway redeploys
+- **Error feedback**: LLM failures surface as user-visible messages in Slack threads
+- **LLM resilience**: 30s timeout, 2 retries on DeepSeek API
+- **Event deduplication**: Prevents duplicate processing of Slack events
+- **Turn-aware prompts**: Bot adjusts questioning strategy based on conversation progress
+- **URL content reading**: Paste a link and the bot incorporates article content into the conversation
+- **Graceful shutdown**: SIGTERM handler auto-saves active sessions before Railway stops the container
+- **Auto-save**: Incomplete sessions are automatically harvested at midnight
 
 ## Setup
 
-1. Create a Slack App with Socket Mode, `chat:write`, `channels:history` permissions, and `message.channels` event subscription
+1. Create a Slack App with Socket Mode, `chat:write`, `channels:history` permissions, and `message.channels` + `app_mention` event subscriptions
 2. Get a DeepSeek API key from platform.deepseek.com
 3. Clone and configure:
 
@@ -125,18 +144,15 @@ npm install
 npm run dev
 ```
 
-4. Deploy to Railway:
+4. Deploy to Railway — connect GitHub repo, set env vars in service Variables tab:
 
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway up
-# Set environment variables in Railway dashboard
+```
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_CHANNEL_ID=C...
+DEEPSEEK_API_KEY=sk-...
+GITHUB_TOKEN=ghp_...          # Personal access token with repo scope
+GITHUB_REPO=user/repo-name
 ```
 
-## Roadmap
-
-- **Phase 1** (Current): Core loop — daily questions, thread follow-ups, harvest storage
-- **Phase 2**: Context injection — user profile, recent seeds in question generation, cross-harvest connections
-- **Phase 3**: Theme automation — auto-generated topic summaries, tag-based related harvest retrieval
+Railway auto-deploys on push to `main`.
