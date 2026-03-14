@@ -40,12 +40,6 @@ export interface SeedAndTags {
   tags: string[];
 }
 
-export interface QuestionContext {
-  recentSeeds?: string[];
-  recentTags?: string[];
-  yesterdaySummary?: string;
-}
-
 export interface ParentInfo {
   mode: Mode;
   question: string;

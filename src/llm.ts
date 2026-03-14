@@ -38,6 +38,30 @@ interface ChatWithToolsOptions {
   toolContext?: ToolContext;
 }
 
+function safeParseArgs(argsStr: string | undefined): Record<string, unknown> | null {
+  try {
+    return JSON.parse(argsStr || '{}');
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCallKey(name: string, argsStr: string | undefined): string {
+  try {
+    const parsed = JSON.parse(argsStr || '{}');
+    return `${name}:${JSON.stringify(parsed)}`;
+  } catch {
+    return `${name}:${argsStr || '{}'}`;
+  }
+}
+
+function getResponseContent(response: OpenAI.Chat.ChatCompletion): OpenAI.Chat.ChatCompletionMessage {
+  if (!response.choices || response.choices.length === 0) {
+    throw new Error('No choices returned from LLM');
+  }
+  return response.choices[0].message;
+}
+
 export async function chatWithTools(options: ChatWithToolsOptions): Promise<string> {
   const { tools, temperature = 0.8, responseFormat, toolContext = {} } = options;
   const messages = [...options.messages];
@@ -46,6 +70,7 @@ export async function chatWithTools(options: ChatWithToolsOptions): Promise<stri
   const previousCalls = new Set<string>();
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const hasTools = tools && tools.length > 0;
     const isLastIteration = i === MAX_TOOL_ITERATIONS - 1;
 
     const requestParams: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
@@ -55,17 +80,17 @@ export async function chatWithTools(options: ChatWithToolsOptions): Promise<stri
     };
 
     // Strip tools on last iteration to force text output
-    if (tools && tools.length > 0 && !isLastIteration) {
+    if (hasTools && !isLastIteration) {
       requestParams.tools = tools;
     }
 
-    if (responseFormat) {
+    // Only apply response_format when tools are not active (avoids DeepSeek confusion)
+    if (responseFormat && !(hasTools && !isLastIteration)) {
       requestParams.response_format = responseFormat;
     }
 
     const response = await getClient().chat.completions.create(requestParams);
-    const choice = response.choices[0];
-    const assistantMessage = choice.message;
+    const assistantMessage = getResponseContent(response);
 
     // No tool calls → return text content
     if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
@@ -74,10 +99,10 @@ export async function chatWithTools(options: ChatWithToolsOptions): Promise<stri
       return content;
     }
 
-    // Check for duplicate calls
+    // Check for duplicate calls (normalized to handle whitespace differences)
     let hasDuplicate = false;
     for (const toolCall of assistantMessage.tool_calls) {
-      const callKey = `${toolCall.function.name}:${toolCall.function.arguments}`;
+      const callKey = normalizeCallKey(toolCall.function.name, toolCall.function.arguments);
       if (previousCalls.has(callKey)) {
         hasDuplicate = true;
         break;
@@ -85,47 +110,34 @@ export async function chatWithTools(options: ChatWithToolsOptions): Promise<stri
       previousCalls.add(callKey);
     }
 
-    if (hasDuplicate) {
-      // Break the loop — make one final call without tools
-      messages.push({ role: 'assistant', content: assistantMessage.content || '', tool_calls: assistantMessage.tool_calls });
-      // Execute the tools one last time so we have valid tool results
-      for (const toolCall of assistantMessage.tool_calls) {
-        const args = JSON.parse(toolCall.function.arguments || '{}');
-        const result = executeTool(toolCall.function.name, args, toolContext);
-        messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result.data });
-      }
-
-      const finalResponse = await getClient().chat.completions.create({
-        model: 'deepseek-chat',
-        messages,
-        temperature,
-        ...(responseFormat ? { response_format: responseFormat } : {}),
-      });
-      const finalContent = finalResponse.choices[0].message.content;
-      if (!finalContent) throw new Error('Empty response from LLM');
-      return finalContent;
-    }
-
     // Execute tools and append results
     messages.push({ role: 'assistant', content: assistantMessage.content || '', tool_calls: assistantMessage.tool_calls });
 
     for (const toolCall of assistantMessage.tool_calls) {
-      const args = JSON.parse(toolCall.function.arguments || '{}');
+      const args = safeParseArgs(toolCall.function.arguments);
+      if (!args) {
+        messages.push({ role: 'tool', tool_call_id: toolCall.id, content: 'Error: invalid JSON arguments' });
+        continue;
+      }
       const result = executeTool(toolCall.function.name, args, toolContext);
       messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result.data });
     }
+
+    if (hasDuplicate) {
+      break; // Fall through to final call below
+    }
   }
 
-  // Max iterations reached — one final call without tools
+  // Final call without tools — forces text output
   const finalResponse = await getClient().chat.completions.create({
     model: 'deepseek-chat',
     messages,
     temperature,
     ...(responseFormat ? { response_format: responseFormat } : {}),
   });
-  const finalContent = finalResponse.choices[0].message.content;
-  if (!finalContent) throw new Error('Empty response from LLM');
-  return finalContent;
+  const finalMessage = getResponseContent(finalResponse);
+  if (!finalMessage.content) throw new Error('Empty response from LLM');
+  return finalMessage.content;
 }
 
 // --- Public API ---

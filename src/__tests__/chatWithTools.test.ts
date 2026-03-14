@@ -151,22 +151,24 @@ describe('chatWithTools', () => {
     expect(createMock).toHaveBeenCalledTimes(3);
   });
 
-  it('applies response_format on every call', async () => {
-    // Tool call first
-    createMock.mockResolvedValueOnce({
-      choices: [{
-        message: {
-          content: null,
-          tool_calls: [{
-            id: 'call_1',
-            type: 'function',
-            function: { name: 'list_tags', arguments: '{}' },
-          }],
-        },
-      }],
-    });
+  it('applies response_format only when tools are stripped', async () => {
+    // 3 tool call iterations to hit the cap
+    for (let i = 0; i < 3; i++) {
+      createMock.mockResolvedValueOnce({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `call_${i}`,
+              type: 'function',
+              function: { name: 'list_tags', arguments: `{"i": ${i}}` },
+            }],
+          },
+        }],
+      });
+    }
 
-    // Then text response
+    // Final forced-text call (tools stripped → response_format applied)
     createMock.mockResolvedValueOnce({
       choices: [{ message: { content: '{"questions": []}', tool_calls: null } }],
     });
@@ -179,8 +181,41 @@ describe('chatWithTools', () => {
       responseFormat: { type: 'json_object' },
     });
 
-    // Both calls should have response_format
-    expect(createMock.mock.calls[0][0].response_format).toEqual({ type: 'json_object' });
-    expect(createMock.mock.calls[1][0].response_format).toEqual({ type: 'json_object' });
+    // Iterations 0-1: tools active → no response_format
+    expect(createMock.mock.calls[0][0].response_format).toBeUndefined();
+    expect(createMock.mock.calls[1][0].response_format).toBeUndefined();
+    // Iteration 2 (last): tools stripped → response_format applied
+    expect(createMock.mock.calls[2][0].response_format).toEqual({ type: 'json_object' });
+    // Final fallback call: response_format applied
+    expect(createMock.mock.calls[3][0].response_format).toEqual({ type: 'json_object' });
+  });
+
+  it('handles malformed tool arguments gracefully', async () => {
+    createMock.mockResolvedValueOnce({
+      choices: [{
+        message: {
+          content: null,
+          tool_calls: [{
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'read_harvests', arguments: 'not valid json{' },
+          }],
+        },
+      }],
+    });
+
+    // After malformed args, LLM gets error and responds with text
+    createMock.mockResolvedValueOnce({
+      choices: [{ message: { content: 'Recovered from bad args', tool_calls: null } }],
+    });
+
+    const result = await chatWithTools({
+      messages: [{ role: 'user', content: 'test' }],
+      tools: [{ type: 'function', function: { name: 'read_harvests', description: 'test', parameters: { type: 'object', properties: {} } } }],
+    });
+
+    expect(result).toBe('Recovered from bad args');
+    // executeTool should NOT have been called for the malformed args
+    expect(executeTool).not.toHaveBeenCalled();
   });
 });
