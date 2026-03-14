@@ -4,6 +4,7 @@ import cron from 'node-cron';
 import { generateQuestions, followUp, extractSeedAndTags } from './llm';
 import { createSession, getSession, addMessage, closeSession, getAllActiveSessions, restoreSessions } from './session';
 import { saveHarvest, loadRecentHarvests } from './harvest';
+import { pullHarvestsFromGitHub } from './github';
 import { extractUrls, fetchUrlContent } from './web';
 import type { ParentInfo } from './types';
 
@@ -278,6 +279,14 @@ process.on('SIGTERM', async () => {
 // --- Startup ---
 (async () => {
   restoreSessions();
+
+  // Pull past harvests from GitHub for context
+  try {
+    await pullHarvestsFromGitHub();
+  } catch (e) {
+    console.error('Failed to pull harvests from GitHub:', (e as Error).message);
+  }
+
   await app.start();
   console.log('⚡ Idea Gardening bot is running');
 })();
