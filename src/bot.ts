@@ -13,6 +13,7 @@ const app = new App({
 });
 
 const CHANNEL_ID = process.env.SLACK_CHANNEL_ID!;
+const HEALTH_CHANNEL_ID = process.env.SLACK_HEALTH_CHANNEL_ID || CHANNEL_ID;
 
 // --- Detect mode from parent message emoji ---
 async function getModeFromParentMessage(channelId: string, threadTs: string): Promise<ParentInfo | null> {
@@ -155,6 +156,66 @@ async function autoSaveAllSessions(): Promise<void> {
     }
   }
 }
+
+// --- Manual trigger: "generate" in channel ---
+app.message(/^generate$/i, async ({ message, client }) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const msg = message as any;
+  if (msg.channel !== CHANNEL_ID) return;
+  if (msg.bot_id) return;
+
+  await client.chat.postMessage({
+    channel: CHANNEL_ID,
+    text: '🔄 질문 생성 중...',
+  });
+
+  await postDailyQuestions();
+});
+
+// --- Health check: "health" in any channel ---
+app.message(/^health$/i, async ({ message, client }) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const msg = message as any;
+  if (msg.bot_id) return;
+
+  const checks: string[] = [];
+  const startTime = Date.now();
+
+  // 1. Slack API check
+  try {
+    const authResult = await client.auth.test();
+    checks.push(`✅ Slack: connected as @${authResult.user}`);
+  } catch (e) {
+    checks.push(`❌ Slack: ${(e as Error).message}`);
+  }
+
+  // 2. LLM API check
+  try {
+    const { followUp } = await import('./llm');
+    const testHistory = [{ role: 'user' as const, content: 'test' }];
+    await followUp(testHistory, 'harvest');
+    checks.push('✅ LLM (DeepSeek): responding');
+  } catch (e) {
+    checks.push(`❌ LLM (DeepSeek): ${(e as Error).message}`);
+  }
+
+  // 3. File system check
+  const fs = await import('fs');
+  const harvestDir = process.env.HARVEST_DIR || './harvests';
+  const harvestCount = fs.existsSync(harvestDir) ? fs.readdirSync(harvestDir).filter(f => f.endsWith('.md')).length : 0;
+  const activeSessionCount = getAllActiveSessions().length;
+  checks.push(`✅ Storage: ${harvestCount} harvests, ${activeSessionCount} active sessions`);
+
+  // 4. Cron check
+  checks.push(`✅ Cron: ${cronSchedule} (${cronTimezone})`);
+
+  const elapsed = Date.now() - startTime;
+
+  await client.chat.postMessage({
+    channel: HEALTH_CHANNEL_ID,
+    text: `🏥 *Health Check Report* (${elapsed}ms)\n\n${checks.join('\n')}`,
+  });
+});
 
 // --- Cron schedules ---
 const cronSchedule = process.env.CRON_SCHEDULE || '0 9 * * *';
