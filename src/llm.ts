@@ -19,7 +19,7 @@ function getClient(): OpenAI {
 
 function loadPrompt(name: string): string {
   return fs.readFileSync(
-    path.join(process.cwd(), 'prompts', `${name}.md`),
+    path.join(__dirname, '..', 'prompts', `${name}.md`),
     'utf-8',
   );
 }

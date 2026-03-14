@@ -26,11 +26,10 @@ setInterval(() => processedEvents.clear(), 60 * 60 * 1000);
 // --- Detect mode from parent message emoji ---
 async function getModeFromParentMessage(channelId: string, threadTs: string): Promise<ParentInfo | null> {
   try {
-    const result = await app.client.conversations.history({
+    const result = await app.client.conversations.replies({
       channel: channelId,
-      latest: threadTs,
+      ts: threadTs,
       limit: 1,
-      inclusive: true,
     });
 
     const parentMessage = result.messages?.[0];
@@ -67,6 +66,9 @@ app.event('message', async ({ event, client }) => {
   const threadTs: string = msg.thread_ts;
   const userText: string = msg.text || '';
 
+  // Skip empty messages (images, files, etc.)
+  if (!userText.trim()) return;
+
   // Check for "done"
   if (userText.toLowerCase().trim() === 'done') {
     const session = getSession(threadTs);
@@ -99,7 +101,14 @@ app.event('message', async ({ event, client }) => {
   if (!session) {
     const parentInfo = await getModeFromParentMessage(CHANNEL_ID, threadTs);
     console.log(`[msg] parentInfo=${JSON.stringify(parentInfo)}`);
-    if (!parentInfo) return;
+    if (!parentInfo) {
+      await client.chat.postMessage({
+        channel: CHANNEL_ID,
+        thread_ts: threadTs,
+        text: '이 스레드의 질문을 인식하지 못했어. 봇이 올린 질문에 답해줘!',
+      });
+      return;
+    }
 
     session = createSession(threadTs, CHANNEL_ID, parentInfo.mode, parentInfo.question);
   }
