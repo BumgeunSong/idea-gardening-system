@@ -42,6 +42,7 @@ export interface SeedAndTags {
 
 export interface QuestionContext {
   recentSeeds?: string[];
+  recentTags?: string[];
   yesterdaySummary?: string;
 }
 

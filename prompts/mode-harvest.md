@@ -3,6 +3,11 @@
 스레드 세션 arc: Dig → Connect → Crystallize
 (시작 질문이 이미 Spark 역할)
 
+턴별 가이드:
+- 턴 1-3: Dig. 답변의 why/how를 파고든다.
+- 턴 4-5: Connect. 과거 생각이나 다른 맥락과 연결.
+- 턴 6+: Crystallize. 핵심을 한 문장으로 압축.
+
 [Dig] 답변의 why/how를 파고든다. 2-3턴.
 - "그게 왜 의외였어?"
 - "네 경험에서 비슷한 사례가 있어?"

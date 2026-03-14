@@ -4,6 +4,7 @@ import cron from 'node-cron';
 import { generateQuestions, followUp, extractSeedAndTags } from './llm';
 import { createSession, getSession, addMessage, closeSession, getAllActiveSessions, restoreSessions } from './session';
 import { saveHarvest, loadRecentHarvests } from './harvest';
+import { extractUrls, fetchUrlContent } from './web';
 import type { ParentInfo } from './types';
 
 const app = new App({
@@ -13,7 +14,13 @@ const app = new App({
 });
 
 const CHANNEL_ID = process.env.SLACK_CHANNEL_ID!;
-const HEALTH_CHANNEL_ID = process.env.SLACK_HEALTH_CHANNEL_ID || CHANNEL_ID;
+
+
+// --- Event deduplication ---
+const processedEvents = new Set<string>();
+
+// Clear old entries every hour
+setInterval(() => processedEvents.clear(), 60 * 60 * 1000);
 
 // --- Detect mode from parent message emoji ---
 async function getModeFromParentMessage(channelId: string, threadTs: string): Promise<ParentInfo | null> {
@@ -48,6 +55,11 @@ app.event('message', async ({ event, client }) => {
   if (!msg.thread_ts) return;
   if (msg.bot_id) return;
   if (msg.subtype) return;
+
+  // Deduplicate events
+  const eventKey = `${msg.channel}-${msg.ts}`;
+  if (processedEvents.has(eventKey)) return;
+  processedEvents.add(eventKey);
 
   const threadTs: string = msg.thread_ts;
   const userText: string = msg.text || '';
@@ -88,12 +100,27 @@ app.event('message', async ({ event, client }) => {
     session = createSession(threadTs, CHANNEL_ID, parentInfo.mode, parentInfo.question);
   }
 
+  // Detect URLs and fetch content
+  let messageToAdd = userText;
+  const urls = extractUrls(userText);
+  if (urls.length > 0) {
+    const content = await fetchUrlContent(urls[0]);
+    if (content) {
+      messageToAdd = `${userText}\n\n[링크 내용 요약:\n${content}]`;
+    }
+  }
+
   // Add user message
-  addMessage(threadTs, 'user', userText);
+  addMessage(threadTs, 'user', messageToAdd);
+
+  // Compute turn count and load past context
+  const turnCount = session.history.filter(m => m.role === 'user').length;
+  const recentHarvests = loadRecentHarvests(5);
+  const recentSeeds = recentHarvests.map(h => h.frontmatter.seed).filter(Boolean);
 
   // Generate follow-up
   try {
-    const response = await followUp(session.history, session.mode);
+    const response = await followUp(session.history, session.mode, turnCount, recentSeeds);
     addMessage(threadTs, 'assistant', response);
 
     await client.chat.postMessage({
@@ -103,6 +130,11 @@ app.event('message', async ({ event, client }) => {
     });
   } catch (e) {
     console.error('Failed to generate follow-up:', (e as Error).message);
+    await client.chat.postMessage({
+      channel: CHANNEL_ID,
+      thread_ts: threadTs,
+      text: '⚠️ 응답 생성에 실패했어. 다시 한번 말해줄래?',
+    });
   }
 });
 
@@ -115,8 +147,13 @@ async function postDailyQuestions(): Promise<void> {
     const recentSeeds = recentHarvests
       .map(h => h.frontmatter.seed)
       .filter(Boolean);
+    const recentTags = recentHarvests
+      .flatMap(h => h.frontmatter.tags || [])
+      .filter(Boolean);
+    // Deduplicate tags
+    const uniqueTags = [...new Set(recentTags)];
 
-    const questions = await generateQuestions({ recentSeeds });
+    const questions = await generateQuestions({ recentSeeds, recentTags: uniqueTags });
 
     for (const q of questions) {
       const label = q.mode.charAt(0).toUpperCase() + q.mode.slice(1);
@@ -129,6 +166,14 @@ async function postDailyQuestions(): Promise<void> {
     console.log(`Posted ${questions.length} questions to channel`);
   } catch (e) {
     console.error('Failed to post daily questions:', (e as Error).message);
+    try {
+      await app.client.chat.postMessage({
+        channel: CHANNEL_ID,
+        text: '❌ 오늘 질문 생성에 실패했어요.',
+      });
+    } catch {
+      // Last resort: can't even post error message
+    }
   }
 }
 
@@ -157,26 +202,24 @@ async function autoSaveAllSessions(): Promise<void> {
   }
 }
 
-// --- Manual trigger: "generate" in channel ---
-app.message(/^generate$/i, async ({ message, client }) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const msg = message as any;
-  if (msg.channel !== CHANNEL_ID) return;
-  if (msg.bot_id) return;
+// --- Bot mention commands ---
+app.event('app_mention', async ({ event, client }) => {
+  const text = event.text.toLowerCase();
 
-  await client.chat.postMessage({
-    channel: CHANNEL_ID,
-    text: '🔄 질문 생성 중...',
-  });
+  // --- Manual trigger: "generate" ---
+  if (text.includes('generate')) {
+    await client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.ts,
+      text: '🔄 질문 생성 중...',
+    });
 
-  await postDailyQuestions();
-});
+    await postDailyQuestions();
+    return;
+  }
 
-// --- Health check: "health" in any channel ---
-app.message(/^health$/i, async ({ message, client }) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const msg = message as any;
-  if (msg.bot_id) return;
+  // --- Health check ---
+  if (!text.includes('health check')) return;
 
   const checks: string[] = [];
   const startTime = Date.now();
@@ -212,7 +255,8 @@ app.message(/^health$/i, async ({ message, client }) => {
   const elapsed = Date.now() - startTime;
 
   await client.chat.postMessage({
-    channel: HEALTH_CHANNEL_ID,
+    channel: event.channel,
+    thread_ts: event.ts,
     text: `🏥 *Health Check Report* (${elapsed}ms)\n\n${checks.join('\n')}`,
   });
 });
@@ -223,6 +267,13 @@ const cronTimezone = process.env.CRON_TIMEZONE || 'Asia/Seoul';
 
 cron.schedule(cronSchedule, postDailyQuestions, { timezone: cronTimezone });
 cron.schedule('55 23 * * *', autoSaveAllSessions, { timezone: cronTimezone });
+
+// --- SIGTERM handler: auto-save before Railway stops container ---
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received — auto-saving sessions before shutdown...');
+  await autoSaveAllSessions();
+  process.exit(0);
+});
 
 // --- Startup ---
 (async () => {

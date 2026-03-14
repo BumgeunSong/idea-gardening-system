@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import type { Session, Harvest } from './types';
+import { pushHarvestToGitHub } from './github';
 
 const HARVEST_DIR = process.env.HARVEST_DIR || './harvests';
 
@@ -40,6 +41,11 @@ export function saveHarvest(session: Session, seed: string, tags: string[]): str
   const content = `${frontmatter}\n\n${body}\n`;
   const filePath = path.join(HARVEST_DIR, `${id}.md`);
   fs.writeFileSync(filePath, content);
+
+  // Fire-and-forget: push to GitHub for persistence
+  pushHarvestToGitHub(`${id}.md`, content).catch(e =>
+    console.error(`GitHub push failed for ${id}:`, (e as Error).message),
+  );
 
   console.log(`Saved harvest: ${id}`);
   return id;
