@@ -66,6 +66,20 @@ export function loadRecentHarvests(n = 5): Harvest[] {
   });
 }
 
+export function loadHarvestsByDate(date: string): Harvest[] {
+  if (!fs.existsSync(HARVEST_DIR)) return [];
+
+  const dateCompact = date.replace(/-/g, '');
+  const files = fs.readdirSync(HARVEST_DIR)
+    .filter(f => f.endsWith('.md') && f.includes(dateCompact))
+    .sort();
+
+  return files.map(f => {
+    const content = fs.readFileSync(path.join(HARVEST_DIR, f), 'utf-8');
+    return parseHarvest(content);
+  });
+}
+
 function parseHarvest(content: string): Harvest {
   const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   if (!match) return { frontmatter: {} as Harvest['frontmatter'], body: content };
