@@ -164,7 +164,10 @@ async function postDailyQuestions(): Promise<void> {
     const uniqueTags = [...new Set(recentTags)];
 
     // Build yesterday's summary for compounding context
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    // Compute yesterday in the configured timezone (dates in harvests use UTC via toISOString)
+    const nowLocal = new Date(new Date().toLocaleString('en-US', { timeZone: cronTimezone }));
+    nowLocal.setDate(nowLocal.getDate() - 1);
+    const yesterday = nowLocal.toISOString().split('T')[0];
     const yesterdayHarvests = loadHarvestsByDate(yesterday);
     const yesterdaySummary = yesterdayHarvests.length > 0
       ? yesterdayHarvests.map(h => `- [${h.frontmatter.mode}] ${h.frontmatter.seed}`).join('\n')
@@ -220,9 +223,17 @@ async function autoSaveAllSessions(): Promise<void> {
 }
 
 // --- Slash command: /generate ---
-app.command('/generate', async ({ ack }) => {
+app.command('/generate', async ({ ack, command, client }) => {
   await ack();
-  await postDailyQuestions();
+  try {
+    await postDailyQuestions();
+  } catch (e) {
+    await client.chat.postEphemeral({
+      channel: command.channel_id,
+      user: command.user_id,
+      text: `❌ 질문 생성 실패: ${(e as Error).message}`,
+    });
+  }
 });
 
 // --- Slash command: /healthcheck ---
@@ -269,17 +280,14 @@ app.command('/healthcheck', async ({ ack, command, client }) => {
 });
 
 // --- Slash commands: /harvest, /crig, /bisociate ---
-const MODE_CONFIG: Record<Mode, { emoji: string; opener: (topic: string) => string }> = {
+const MODE_CONFIG: Record<Mode, { opener: (topic: string) => string }> = {
   harvest: {
-    emoji: '🌱',
     opener: (topic) => `🌱 ${topic} — 이 주제에 대해 어떤 생각이 있어?`,
   },
   crig: {
-    emoji: '💎',
     opener: (topic) => `💎 ${topic} — 어느 정도 이해하고 있어?`,
   },
   bisociate: {
-    emoji: '🔀',
     opener: (topic) => `🔀 ${topic} — 이 둘의 공통점이 뭘까?`,
   },
 };
@@ -298,8 +306,7 @@ for (const mode of ['harvest', 'crig', 'bisociate'] as Mode[]) {
       return;
     }
 
-    const config = MODE_CONFIG[mode];
-    const openerText = config.opener(topic);
+    const openerText = MODE_CONFIG[mode].opener(topic);
 
     // Post opener as a new channel message (becomes thread root)
     const result = await client.chat.postMessage({
@@ -307,15 +314,18 @@ for (const mode of ['harvest', 'crig', 'bisociate'] as Mode[]) {
       text: openerText,
     });
 
-    const threadTs = result.ts!;
-    createSession(threadTs, CHANNEL_ID, mode, openerText);
+    if (!result.ts) {
+      console.error('Slack postMessage did not return a timestamp');
+      return;
+    }
+    createSession(result.ts, CHANNEL_ID, mode, openerText);
   });
 }
 
 // --- Bot mention: on-demand harvest thread (fallback) ---
 app.event('app_mention', async ({ event, client }) => {
   // Extract topic by removing the bot mention
-  const topic = event.text.replace(/<@[A-Z0-9]+>/g, '').trim();
+  const topic = event.text.replace(/<@[A-Za-z0-9]+>/g, '').trim();
   if (!topic) return;
 
   const openerText = `🌱 ${topic} — 이 주제에 대해 어떤 생각이 있어?`;
@@ -325,8 +335,11 @@ app.event('app_mention', async ({ event, client }) => {
     text: openerText,
   });
 
-  const threadTs = result.ts!;
-  createSession(threadTs, CHANNEL_ID, 'harvest', openerText);
+  if (!result.ts) {
+    console.error('Slack postMessage did not return a timestamp');
+    return;
+  }
+  createSession(result.ts, CHANNEL_ID, 'harvest', openerText);
 });
 
 // --- Cron schedules ---

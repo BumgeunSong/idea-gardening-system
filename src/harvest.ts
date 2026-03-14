@@ -23,8 +23,8 @@ export function saveHarvest(session: Session, seed: string, tags: string[]): str
     `id: ${id}`,
     `date: ${date}`,
     `mode: ${session.mode}`,
-    `seed: "${seed}"`,
-    `tags: [${tags.join(', ')}]`,
+    `seed: ${JSON.stringify(seed)}`,
+    `tags: [${tags.map(t => t.replace(/[^a-z0-9-]/g, '')).join(', ')}]`,
     `connections: []`,
     '---',
   ].join('\n');
