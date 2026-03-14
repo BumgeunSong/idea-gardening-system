@@ -3,7 +3,7 @@ import { App } from '@slack/bolt';
 import cron from 'node-cron';
 import { generateQuestions, followUp, extractSeedAndTags } from './llm';
 import { createSession, getSession, addMessage, closeSession, getAllActiveSessions, restoreSessions } from './session';
-import { saveHarvest, loadRecentHarvests, loadHarvestsByDate } from './harvest';
+import { saveHarvest } from './harvest';
 import { pullHarvestsFromGitHub } from './github';
 import { extractUrls, fetchUrlContent } from './web';
 import type { Mode, ParentInfo } from './types';
@@ -123,14 +123,12 @@ app.event('message', async ({ event, client }) => {
   // Add user message
   addMessage(threadTs, 'user', messageToAdd);
 
-  // Compute turn count and load past context
+  // Compute turn count (LLM fetches harvests via tools when needed)
   const turnCount = session.history.filter(m => m.role === 'user').length;
-  const recentHarvests = loadRecentHarvests(5);
-  const recentSeeds = recentHarvests.map(h => h.frontmatter.seed).filter(Boolean);
 
   // Generate follow-up
   try {
-    const response = await followUp(session.history, session.mode, turnCount, recentSeeds);
+    const response = await followUp(session.history, session.mode, turnCount);
     addMessage(threadTs, 'assistant', response);
 
     await client.chat.postMessage({
@@ -153,27 +151,8 @@ async function postDailyQuestions(): Promise<void> {
   console.log('Generating daily questions...');
 
   try {
-    const recentHarvests = loadRecentHarvests(5);
-    const recentSeeds = recentHarvests
-      .map(h => h.frontmatter.seed)
-      .filter(Boolean);
-    const recentTags = recentHarvests
-      .flatMap(h => h.frontmatter.tags || [])
-      .filter(Boolean);
-    // Deduplicate tags
-    const uniqueTags = [...new Set(recentTags)];
-
-    // Build yesterday's summary for compounding context
-    // Compute yesterday in the configured timezone (dates in harvests use UTC via toISOString)
-    const nowLocal = new Date(new Date().toLocaleString('en-US', { timeZone: cronTimezone }));
-    nowLocal.setDate(nowLocal.getDate() - 1);
-    const yesterday = nowLocal.toISOString().split('T')[0];
-    const yesterdayHarvests = loadHarvestsByDate(yesterday);
-    const yesterdaySummary = yesterdayHarvests.length > 0
-      ? yesterdayHarvests.map(h => `- [${h.frontmatter.mode}] ${h.frontmatter.seed}`).join('\n')
-      : undefined;
-
-    const questions = await generateQuestions({ recentSeeds, recentTags: uniqueTags, yesterdaySummary });
+    // LLM fetches its own context via tools (read_harvests, list_tags)
+    const questions = await generateQuestions();
 
     for (const q of questions) {
       const label = q.mode.charAt(0).toUpperCase() + q.mode.slice(1);

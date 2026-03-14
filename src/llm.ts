@@ -1,7 +1,9 @@
 import OpenAI from 'openai';
+import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
 import fs from 'fs';
 import path from 'path';
-import type { Message, Mode, Question, SeedAndTags, QuestionContext } from './types';
+import type { Message, Mode, Question, SeedAndTags, ToolContext } from './types';
+import { executeTool, CONVERSATION_TOOLS, QUESTION_TOOLS } from './tools';
 
 let client: OpenAI | null = null;
 
@@ -24,35 +26,124 @@ function loadPrompt(name: string): string {
   );
 }
 
-export async function generateQuestions(context: QuestionContext = {}): Promise<Question[]> {
-  const systemPrompt = loadPrompt('system-base') + '\n\n' + loadPrompt('generate-questions');
+// --- Core tool-calling loop ---
 
-  let userContent = '오늘의 9개 질문을 생성해줘.';
+const MAX_TOOL_ITERATIONS = 3;
 
-  if (context.recentSeeds && context.recentSeeds.length > 0) {
-    userContent += `\n\n최근 수확물의 씨앗:\n${context.recentSeeds.map(s => `- ${s}`).join('\n')}`;
+interface ChatWithToolsOptions {
+  messages: ChatCompletionMessageParam[];
+  tools?: ChatCompletionTool[];
+  temperature?: number;
+  responseFormat?: { type: 'json_object' };
+  toolContext?: ToolContext;
+}
+
+export async function chatWithTools(options: ChatWithToolsOptions): Promise<string> {
+  const { tools, temperature = 0.8, responseFormat, toolContext = {} } = options;
+  const messages = [...options.messages];
+
+  // Track previous tool calls for duplicate detection
+  const previousCalls = new Set<string>();
+
+  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const isLastIteration = i === MAX_TOOL_ITERATIONS - 1;
+
+    const requestParams: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+      model: 'deepseek-chat',
+      messages,
+      temperature,
+    };
+
+    // Strip tools on last iteration to force text output
+    if (tools && tools.length > 0 && !isLastIteration) {
+      requestParams.tools = tools;
+    }
+
+    if (responseFormat) {
+      requestParams.response_format = responseFormat;
+    }
+
+    const response = await getClient().chat.completions.create(requestParams);
+    const choice = response.choices[0];
+    const assistantMessage = choice.message;
+
+    // No tool calls → return text content
+    if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
+      const content = assistantMessage.content;
+      if (!content) throw new Error('Empty response from LLM');
+      return content;
+    }
+
+    // Check for duplicate calls
+    let hasDuplicate = false;
+    for (const toolCall of assistantMessage.tool_calls) {
+      const callKey = `${toolCall.function.name}:${toolCall.function.arguments}`;
+      if (previousCalls.has(callKey)) {
+        hasDuplicate = true;
+        break;
+      }
+      previousCalls.add(callKey);
+    }
+
+    if (hasDuplicate) {
+      // Break the loop — make one final call without tools
+      messages.push({ role: 'assistant', content: assistantMessage.content || '', tool_calls: assistantMessage.tool_calls });
+      // Execute the tools one last time so we have valid tool results
+      for (const toolCall of assistantMessage.tool_calls) {
+        const args = JSON.parse(toolCall.function.arguments || '{}');
+        const result = executeTool(toolCall.function.name, args, toolContext);
+        messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result.data });
+      }
+
+      const finalResponse = await getClient().chat.completions.create({
+        model: 'deepseek-chat',
+        messages,
+        temperature,
+        ...(responseFormat ? { response_format: responseFormat } : {}),
+      });
+      const finalContent = finalResponse.choices[0].message.content;
+      if (!finalContent) throw new Error('Empty response from LLM');
+      return finalContent;
+    }
+
+    // Execute tools and append results
+    messages.push({ role: 'assistant', content: assistantMessage.content || '', tool_calls: assistantMessage.tool_calls });
+
+    for (const toolCall of assistantMessage.tool_calls) {
+      const args = JSON.parse(toolCall.function.arguments || '{}');
+      const result = executeTool(toolCall.function.name, args, toolContext);
+      messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result.data });
+    }
   }
 
-  if (context.recentTags && context.recentTags.length > 0) {
-    userContent += `\n\n최근 수확물의 태그:\n${context.recentTags.map(t => `- ${t}`).join('\n')}`;
-  }
-
-  if (context.yesterdaySummary) {
-    userContent += `\n\n어제 대화 요약:\n${context.yesterdaySummary}`;
-  }
-
-  const response = await getClient().chat.completions.create({
+  // Max iterations reached — one final call without tools
+  const finalResponse = await getClient().chat.completions.create({
     model: 'deepseek-chat',
+    messages,
+    temperature,
+    ...(responseFormat ? { response_format: responseFormat } : {}),
+  });
+  const finalContent = finalResponse.choices[0].message.content;
+  if (!finalContent) throw new Error('Empty response from LLM');
+  return finalContent;
+}
+
+// --- Public API ---
+
+export async function generateQuestions(): Promise<Question[]> {
+  const systemPrompt = loadPrompt('system-base')
+    + '\n\n' + loadPrompt('generate-questions')
+    + '\n\n' + loadPrompt('tool-guidelines-questions');
+
+  const content = await chatWithTools({
     messages: [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userContent },
+      { role: 'user', content: '오늘의 9개 질문을 생성해줘. 먼저 최근 수확물과 태그를 확인한 후 질문을 만들어.' },
     ],
+    tools: QUESTION_TOOLS,
     temperature: 0.9,
-    response_format: { type: 'json_object' },
+    responseFormat: { type: 'json_object' },
   });
-
-  const content = response.choices[0].message.content;
-  if (!content) throw new Error('Empty response from LLM');
 
   const result = JSON.parse(content) as { questions: Question[] };
   return result.questions;
@@ -62,11 +153,12 @@ export async function followUp(
   history: Message[],
   mode: Mode,
   turnCount?: number,
-  recentSeeds?: string[],
 ): Promise<string> {
-  const systemPrompt = loadPrompt('system-base') + '\n\n' + loadPrompt(`mode-${mode}`);
+  const systemPrompt = loadPrompt('system-base')
+    + '\n\n' + loadPrompt(`mode-${mode}`)
+    + '\n\n' + loadPrompt('tool-guidelines');
 
-  const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
+  const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
   ];
 
@@ -74,25 +166,14 @@ export async function followUp(
     messages.push({ role: 'system', content: `현재 ${turnCount}번째 대화.` });
   }
 
-  if (recentSeeds && recentSeeds.length > 0) {
-    messages.push({
-      role: 'system',
-      content: `최근 수확물의 씨앗 (연결 질문에 활용):\n${recentSeeds.map(s => `- ${s}`).join('\n')}`,
-    });
-  }
-
   messages.push(...history);
 
-  const response = await getClient().chat.completions.create({
-    model: 'deepseek-chat',
+  return chatWithTools({
     messages,
+    tools: CONVERSATION_TOOLS,
     temperature: 0.8,
+    toolContext: { mode },
   });
-
-  const content = response.choices[0].message.content;
-  if (!content) throw new Error('Empty response from LLM');
-
-  return content;
 }
 
 export async function extractSeedAndTags(history: Message[]): Promise<SeedAndTags> {
