@@ -3,13 +3,15 @@ import path from 'path';
 import type { Session, Harvest } from './types';
 import { pushHarvestToGitHub } from './github';
 
-const HARVEST_DIR = process.env.HARVEST_DIR || './harvests';
+function getHarvestDir(): string {
+  return process.env.HARVEST_DIR || './harvests';
+}
 
-fs.mkdirSync(HARVEST_DIR, { recursive: true });
+fs.mkdirSync(getHarvestDir(), { recursive: true });
 
 function generateId(): string {
   const date = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  const existing = fs.readdirSync(HARVEST_DIR).filter(f => f.startsWith(`h-${date}`));
+  const existing = fs.readdirSync(getHarvestDir()).filter(f => f.startsWith(`h-${date}`));
   const seq = String(existing.length + 1).padStart(3, '0');
   return `h-${date}-${seq}`;
 }
@@ -39,7 +41,7 @@ export function saveHarvest(session: Session, seed: string, tags: string[]): str
     .join('\n\n');
 
   const content = `${frontmatter}\n\n${body}\n`;
-  const filePath = path.join(HARVEST_DIR, `${id}.md`);
+  const filePath = path.join(getHarvestDir(), `${id}.md`);
   fs.writeFileSync(filePath, content);
 
   // Fire-and-forget: push to GitHub for persistence
@@ -52,35 +54,49 @@ export function saveHarvest(session: Session, seed: string, tags: string[]): str
 }
 
 export function loadRecentHarvests(n = 5): Harvest[] {
-  if (!fs.existsSync(HARVEST_DIR)) return [];
+  if (!fs.existsSync(getHarvestDir())) return [];
 
-  const files = fs.readdirSync(HARVEST_DIR)
+  const files = fs.readdirSync(getHarvestDir())
     .filter(f => f.endsWith('.md'))
     .sort()
     .reverse()
     .slice(0, n);
 
   return files.map(f => {
-    const content = fs.readFileSync(path.join(HARVEST_DIR, f), 'utf-8');
+    const content = fs.readFileSync(path.join(getHarvestDir(), f), 'utf-8');
     return parseHarvest(content);
   });
 }
 
 export function loadHarvestsByDate(date: string): Harvest[] {
-  if (!fs.existsSync(HARVEST_DIR)) return [];
+  if (!fs.existsSync(getHarvestDir())) return [];
 
   const dateCompact = date.replace(/-/g, '');
-  const files = fs.readdirSync(HARVEST_DIR)
+  const files = fs.readdirSync(getHarvestDir())
     .filter(f => f.endsWith('.md') && f.includes(dateCompact))
     .sort();
 
   return files.map(f => {
-    const content = fs.readFileSync(path.join(HARVEST_DIR, f), 'utf-8');
+    const content = fs.readFileSync(path.join(getHarvestDir(), f), 'utf-8');
     return parseHarvest(content);
   });
 }
 
-function parseHarvest(content: string): Harvest {
+export function loadAllHarvests(): Harvest[] {
+  if (!fs.existsSync(getHarvestDir())) return [];
+
+  const files = fs.readdirSync(getHarvestDir())
+    .filter(f => f.endsWith('.md'))
+    .sort()
+    .reverse();
+
+  return files.map(f => {
+    const content = fs.readFileSync(path.join(getHarvestDir(), f), 'utf-8');
+    return parseHarvest(content);
+  });
+}
+
+export function parseHarvest(content: string): Harvest {
   const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   if (!match) return { frontmatter: {} as Harvest['frontmatter'], body: content };
 

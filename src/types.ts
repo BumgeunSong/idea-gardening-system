@@ -50,3 +50,9 @@ export interface ParentInfo {
   mode: Mode;
   question: string;
 }
+
+export interface ToolContext {
+  threadTs?: string;
+  session?: Session;
+  mode?: Mode;
+}
