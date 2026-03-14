@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/bot.js",
-    "dev": "tsx --watch src/bot.ts"
+    "dev": "tsx --watch src/bot.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@slack/bolt": "^4.1.0",
