@@ -3,10 +3,17 @@ import fs from 'fs';
 import path from 'path';
 import type { Message, Mode, Question, SeedAndTags, QuestionContext } from './types';
 
-const client = new OpenAI({
-  baseURL: 'https://api.deepseek.com',
-  apiKey: process.env.DEEPSEEK_API_KEY,
-});
+let client: OpenAI | null = null;
+
+function getClient(): OpenAI {
+  if (!client) {
+    client = new OpenAI({
+      baseURL: 'https://api.deepseek.com',
+      apiKey: process.env.DEEPSEEK_API_KEY,
+    });
+  }
+  return client;
+}
 
 function loadPrompt(name: string): string {
   return fs.readFileSync(
@@ -28,7 +35,7 @@ export async function generateQuestions(context: QuestionContext = {}): Promise<
     userContent += `\n\n어제 대화 요약:\n${context.yesterdaySummary}`;
   }
 
-  const response = await client.chat.completions.create({
+  const response = await getClient().chat.completions.create({
     model: 'deepseek-chat',
     messages: [
       { role: 'system', content: systemPrompt },
@@ -48,7 +55,7 @@ export async function generateQuestions(context: QuestionContext = {}): Promise<
 export async function followUp(history: Message[], mode: Mode): Promise<string> {
   const systemPrompt = loadPrompt('system-base') + '\n\n' + loadPrompt(`mode-${mode}`);
 
-  const response = await client.chat.completions.create({
+  const response = await getClient().chat.completions.create({
     model: 'deepseek-chat',
     messages: [
       { role: 'system', content: systemPrompt },
@@ -78,7 +85,7 @@ export async function extractSeedAndTags(history: Message[]): Promise<SeedAndTag
 대화:
 ${conversation}`;
 
-  const response = await client.chat.completions.create({
+  const response = await getClient().chat.completions.create({
     model: 'deepseek-chat',
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.3,
