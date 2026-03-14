@@ -52,6 +52,8 @@ app.event('message', async ({ event, client }) => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const msg = event as any;
 
+  console.log(`[msg] channel=${msg.channel} thread_ts=${msg.thread_ts} bot_id=${msg.bot_id} subtype=${msg.subtype}`);
+
   if (msg.channel !== CHANNEL_ID) return;
   if (!msg.thread_ts) return;
   if (msg.bot_id) return;
