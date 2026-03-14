@@ -98,6 +98,7 @@ app.event('message', async ({ event, client }) => {
 
   if (!session) {
     const parentInfo = await getModeFromParentMessage(CHANNEL_ID, threadTs);
+    console.log(`[msg] parentInfo=${JSON.stringify(parentInfo)}`);
     if (!parentInfo) return;
 
     session = createSession(threadTs, CHANNEL_ID, parentInfo.mode, parentInfo.question);
