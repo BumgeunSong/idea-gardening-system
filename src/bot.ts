@@ -37,9 +37,9 @@ async function getModeFromParentMessage(channelId: string, threadTs: string): Pr
     if (!parentMessage) return null;
 
     const text = parentMessage.text || '';
-    if (text.includes('🌱')) return { mode: 'harvest', question: text };
-    if (text.includes('💎')) return { mode: 'crig', question: text };
-    if (text.includes('🔀')) return { mode: 'bisociate', question: text };
+    if (text.includes('🌱') || text.includes(':seedling:')) return { mode: 'harvest', question: text };
+    if (text.includes('💎') || text.includes(':gem:')) return { mode: 'crig', question: text };
+    if (text.includes('🔀') || text.includes(':twisted_rightwards_arrows:')) return { mode: 'bisociate', question: text };
     return null;
   } catch (e) {
     console.error('Failed to fetch parent message:', (e as Error).message);
