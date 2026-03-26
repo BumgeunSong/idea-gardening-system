@@ -227,3 +227,54 @@ ${conversation}`;
 
   return JSON.parse(content) as SeedAndTags;
 }
+
+export interface Connection {
+  targetId: string;
+  reason: string;
+}
+
+export async function findConnections(
+  newHarvest: { id: string; seed: string; tags: string[] },
+  allHarvests: { id: string; seed: string; tags: string[] }[],
+): Promise<Connection[]> {
+  const candidates = allHarvests.filter(h => h.id !== newHarvest.id);
+  if (candidates.length === 0) return [];
+
+  const candidateLines = candidates
+    .map(h => `- ${h.id}: ${h.seed} [${h.tags.join(', ')}]`)
+    .join('\n');
+
+  const prompt = `아래는 새 수확물과 기존 수확물 목록이야.
+새 수확물과 의미적으로 가장 강하게 연결되는 기존 수확물을 1~3개 골라줘.
+단순한 태그 겹침이 아니라, 아이디어 간의 깊은 연결(보완, 긴장, 확장, 유사 구조)을 찾아줘.
+
+## 새 수확물
+- ${newHarvest.id}: ${newHarvest.seed} [${newHarvest.tags.join(', ')}]
+
+## 기존 수확물
+${candidateLines}
+
+연결이 없으면: {"connections": []}
+반드시 아래 JSON 형식으로만 응답:
+{"connections": [{"targetId": "h-...", "reason": "한 줄 이유"}]}`;
+
+  const response = await getClient().chat.completions.create({
+    model: 'deepseek-chat',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.4,
+    response_format: { type: 'json_object' },
+  });
+
+  const content = response.choices[0].message.content;
+  if (!content) return [];
+
+  try {
+    const parsed = JSON.parse(content) as { connections: Connection[] };
+    const candidateIds = new Set(candidates.map(h => h.id));
+    return (parsed.connections ?? []).filter(
+      c => c.targetId !== newHarvest.id && candidateIds.has(c.targetId),
+    );
+  } catch {
+    return [];
+  }
+}
