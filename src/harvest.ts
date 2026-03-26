@@ -96,6 +96,37 @@ export function loadAllHarvests(): Harvest[] {
   });
 }
 
+export function loadHarvestFile(harvestId: string): string | null {
+  const filePath = path.join(getHarvestDir(), `${harvestId}.md`);
+  if (!fs.existsSync(filePath)) return null;
+  return fs.readFileSync(filePath, 'utf-8');
+}
+
+export function updateHarvestConnections(harvestId: string, newConnectionIds: string[]): void {
+  const raw = loadHarvestFile(harvestId);
+  if (raw === null) return;
+
+  const parsed = parseHarvest(raw);
+  const existing: string[] = Array.isArray(parsed.frontmatter.connections)
+    ? parsed.frontmatter.connections
+    : parsed.frontmatter.connections
+      ? [parsed.frontmatter.connections as string]
+      : [];
+
+  const merged = Array.from(new Set([...existing, ...newConnectionIds]));
+  if (merged.length === existing.length) return;
+
+  const connectionsLine = `connections: [${merged.join(', ')}]`;
+  const updated = raw.replace(/^connections: \[.*\]$/m, connectionsLine);
+
+  const filePath = path.join(getHarvestDir(), `${harvestId}.md`);
+  fs.writeFileSync(filePath, updated);
+
+  pushHarvestToGitHub(`${harvestId}.md`, updated).catch(e =>
+    console.error(`GitHub push failed for ${harvestId}:`, (e as Error).message),
+  );
+}
+
 export function parseHarvest(content: string): Harvest {
   const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   if (!match) return { frontmatter: {} as Harvest['frontmatter'], body: content };

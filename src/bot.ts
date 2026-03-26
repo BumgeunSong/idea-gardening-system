@@ -5,6 +5,7 @@ import { generateQuestions, followUp, extractSeedAndTags } from './llm';
 import { createSession, getSession, addMessage, closeSession, getAllActiveSessions, restoreSessions } from './session';
 import { saveHarvest } from './harvest';
 import { pullHarvestsFromGitHub } from './github';
+import { connectHarvest, batchConnectAll } from './connections';
 import { extractUrls, fetchUrlContent } from './web';
 import type { Mode, ParentInfo } from './types';
 
@@ -82,6 +83,20 @@ app.event('message', async ({ event, client }) => {
         thread_ts: threadTs,
         text: `✅ 수확 완료! (${harvestId})\n🌱 씨앗: ${seed}\n🏷️ ${tags.join(', ')}`,
       });
+
+      // Fire-and-forget: find and write connections
+      connectHarvest(harvestId).then(async (result) => {
+        if (result.connections.length > 0) {
+          const lines = result.connections.map(
+            c => `• ${result.sourceId} ↔ ${c.targetId}: "${c.reason}"`
+          ).join('\n');
+          await client.chat.postMessage({
+            channel: CHANNEL_ID,
+            thread_ts: threadTs,
+            text: `🔗 연결된 수확물:\n${lines}`,
+          });
+        }
+      }).catch(e => console.error('Auto-connect failed:', (e as Error).message));
     } catch (e) {
       console.error('Failed to save harvest:', (e as Error).message);
       await client.chat.postMessage({
@@ -321,12 +336,57 @@ app.event('app_mention', async ({ event, client }) => {
   createSession(result.ts, CHANNEL_ID, 'harvest', openerText);
 });
 
+// --- Batch connections ---
+async function runBatchConnections(): Promise<void> {
+  console.log('Running batch harvest connections...');
+  try {
+    const results = await batchConnectAll();
+    if (results.length === 0) {
+      console.log('No new connections found');
+      return;
+    }
+
+    const lines = results.flatMap(r =>
+      r.connections.map(c => `• ${r.sourceId} ↔ ${c.targetId}: "${c.reason}"`)
+    );
+
+    await app.client.chat.postMessage({
+      channel: CHANNEL_ID,
+      text: `🔗 새로운 연결 ${lines.length}개 발견!\n${lines.join('\n')}`,
+    });
+
+    console.log(`Batch connections: ${lines.length} new connections`);
+  } catch (e) {
+    console.error('Batch connections failed:', (e as Error).message);
+  }
+}
+
+// --- Slash command: /connect ---
+app.command('/connect', async ({ ack, command, client }) => {
+  await ack();
+  try {
+    await client.chat.postEphemeral({
+      channel: command.channel_id,
+      user: command.user_id,
+      text: '🔗 수확물 연결 작업을 시작합니다...',
+    });
+    await runBatchConnections();
+  } catch (e) {
+    await client.chat.postEphemeral({
+      channel: command.channel_id,
+      user: command.user_id,
+      text: `❌ 연결 실패: ${(e as Error).message}`,
+    });
+  }
+});
+
 // --- Cron schedules ---
 const cronSchedule = process.env.CRON_SCHEDULE || '0 9 * * *';
 const cronTimezone = process.env.CRON_TIMEZONE || 'Asia/Seoul';
 
 cron.schedule(cronSchedule, postDailyQuestions, { timezone: cronTimezone });
 cron.schedule('55 23 * * *', autoSaveAllSessions, { timezone: cronTimezone });
+cron.schedule('5 9 * * *', runBatchConnections, { timezone: cronTimezone });
 
 // --- SIGTERM handler: auto-save before Railway stops container ---
 process.on('SIGTERM', async () => {
